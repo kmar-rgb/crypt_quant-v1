@@ -1,0 +1,63 @@
+[scan]
+frequency = "daily"
+max_coins = 500
+default_currency = "USD"
+display_currencies = ["USD", "AUD"]
+timezone = "Australia/Sydney"
+
+[data]
+min_history_days = 180
+cache_ttl_seconds = 300
+request_timeout_seconds = 20
+max_retries = 3
+
+[filters]
+minimum_market_cap = 100000000
+minimum_24h_volume = 5000000
+minimum_volume_to_market_cap = 0.005
+minimum_active_markets = 5
+exclude_stablecoins = true
+exclude_wrapped_tokens = true
+exclude_leveraged_tokens = true
+exclude_missing_data = true
+maximum_daily_volatility_pct = 25.0
+
+[scoring]
+buy_threshold = 4.0
+watch_threshold = 3.0
+minimum_risk_reward = 2.0
+max_extension_from_50d_pct = 15.0
+max_extension_from_200d_pct = 60.0
+stage_trend_weight = 1.0
+breakout_structure_weight = 1.0
+volume_liquidity_weight = 1.0
+momentum_relative_strength_weight = 1.0
+risk_entry_quality_weight = 1.0
+
+[stage]
+ma_short = 50
+ma_mid = 150
+ma_long = 200
+base_lookback_days = 150
+maximum_stage1_base_depth_pct = 35.0
+early_stage2_max_extension_from_pivot_pct = 10.0
+
+[pattern]
+cup_min_days = 35
+cup_max_days = 325
+cup_min_depth_pct = 12.0
+cup_max_depth_pct = 40.0
+handle_min_days = 5
+handle_max_days = 30
+handle_max_depth_pct = 15.0
+breakout_volume_ratio = 1.4
+
+[ai]
+provider = "mock"
+model = "mock-json"
+timeout_seconds = 45
+cache_responses = true
+
+[alerts]
+enabled = true
+dedupe_window_hours = 24
