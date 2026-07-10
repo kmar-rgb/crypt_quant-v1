@@ -8,10 +8,13 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from crypto_quant.cmc_client import CoinMarketCapError, CoinMarketCapPublicClient
 from crypto_quant.config import DEFAULT_SQLITE_PATH, load_app_settings, load_runtime_settings
 
 
 st.set_page_config(page_title="Crypto Quant Research", page_icon="CQ", layout="wide")
+
+DEFAULT_SYMBOLS = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX", "LINK", "TON"]
 
 
 def main() -> None:
@@ -26,23 +29,26 @@ def main() -> None:
             label_visibility="collapsed",
         )
         st.divider()
+        symbols = st.text_input("Live symbols", ",".join(DEFAULT_SYMBOLS))
+        refresh_live = st.button("Refresh live market data", type="primary")
         st.caption("Research classification only. No trades are placed.")
 
     if page == "Market Overview":
-        market_overview(settings)
+        market_overview(settings, symbols, refresh_live)
     elif page == "Quant Screener":
-        quant_screener(settings)
+        quant_screener(settings, symbols, refresh_live)
     elif page == "AI Analyst Report":
         analyst_report()
     else:
         settings_page(settings, runtime)
 
 
-def market_overview(settings: Any) -> None:
+def market_overview(settings: Any, symbols_text: str, refresh_live: bool) -> None:
     st.title("Crypto Market Overview")
     st.caption("BUY means quantitative research classification, not an instruction to purchase.")
 
-    rows = load_screener_rows(settings.scan.default_currency)
+    rows, source_note = load_market_rows(settings, symbols_text, refresh_live)
+    st.caption(source_note)
     scanned = len(rows)
     buy_count = int((rows["rating"] == "BUY").sum()) if not rows.empty and "rating" in rows else 0
     watch_count = int((rows["rating"] == "WATCH").sum()) if not rows.empty and "rating" in rows else 0
@@ -76,9 +82,10 @@ def market_overview(settings: Any) -> None:
     )
 
 
-def quant_screener(settings: Any) -> None:
+def quant_screener(settings: Any, symbols_text: str, refresh_live: bool) -> None:
     st.title("Crypto Quant Screener")
-    rows = load_screener_rows(settings.scan.default_currency)
+    rows, source_note = load_market_rows(settings, symbols_text, refresh_live)
+    st.caption(source_note)
     if rows.empty:
         empty_state()
         return
@@ -150,8 +157,94 @@ def settings_page(settings: Any, runtime: Any) -> None:
         st.write(f"Minimum risk-to-reward: {settings.scoring.minimum_risk_reward:.1f}")
 
         st.subheader("API Status")
-        st.write("CoinMarketCap API key configured" if runtime.coinmarketcap_api_key else "CoinMarketCap API key not configured")
+        st.write("Keyless CoinMarketCap public API enabled")
+        st.write("CoinMarketCap API key configured" if runtime.coinmarketcap_api_key else "CoinMarketCap API key not configured for keyed endpoints")
         st.write(f"Database URL: `{runtime.database_url}`")
+
+
+def load_market_rows(settings: Any, symbols_text: str, refresh_live: bool) -> tuple[pd.DataFrame, str]:
+    symbols = parse_symbols(symbols_text)
+    if refresh_live or not _sqlite_path().exists():
+        live_rows, error = load_keyless_simple_price(
+            tuple(symbols),
+            settings.scan.default_currency,
+            settings.data.request_timeout_seconds,
+            settings.data.max_retries,
+        )
+        if not live_rows.empty:
+            return live_rows, "Source: CoinMarketCap keyless public API"
+        if error:
+            st.warning(error)
+
+    stored_rows = load_screener_rows(settings.scan.default_currency)
+    if not stored_rows.empty:
+        return stored_rows, "Source: stored local database"
+
+    live_rows, error = load_keyless_simple_price(
+        tuple(symbols),
+        settings.scan.default_currency,
+        settings.data.request_timeout_seconds,
+        settings.data.max_retries,
+    )
+    if error:
+        st.warning(error)
+    if not live_rows.empty:
+        return live_rows, "Source: CoinMarketCap keyless public API"
+    return empty_screener_frame(), "Source: no market data available yet"
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def load_keyless_simple_price(
+    symbols: tuple[str, ...],
+    currency: str,
+    timeout_seconds: int,
+    max_retries: int,
+) -> tuple[pd.DataFrame, str | None]:
+    client = CoinMarketCapPublicClient(
+        timeout_seconds=timeout_seconds,
+        max_retries=max_retries,
+    )
+    try:
+        envelope = client.simple_price(symbols=list(symbols), convert=currency)
+    except CoinMarketCapError as exc:
+        return empty_screener_frame(), f"CoinMarketCap keyless request failed: {exc}"
+    return simple_price_frame(envelope.data, currency), None
+
+
+def simple_price_frame(data: Any, currency: str) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    items = data.items() if isinstance(data, dict) else enumerate(data if isinstance(data, list) else [])
+    for index, payload in items:
+        item = payload if isinstance(payload, dict) else {}
+        quote = item.get("quote", {}).get(currency) if isinstance(item.get("quote"), dict) else None
+        flat_quote = item.get(currency) if isinstance(item.get(currency), dict) else None
+        price = _first_number(item.get("price"), quote.get("price") if quote else None, flat_quote.get("price") if flat_quote else None, item.get(currency))
+        rows.append(
+            {
+                "rank": item.get("cmc_rank") or item.get("rank"),
+                "name": item.get("name") or str(index).upper(),
+                "symbol": item.get("symbol") or str(index).upper(),
+                "price": price,
+                "percent_change_24h": _first_number(item.get("percent_change_24h"), quote.get("percent_change_24h") if quote else None),
+                "percent_change_7d": _first_number(item.get("percent_change_7d"), quote.get("percent_change_7d") if quote else None),
+                "percent_change_30d": _first_number(item.get("percent_change_30d"), quote.get("percent_change_30d") if quote else None),
+                "percent_change_90d": _first_number(item.get("percent_change_90d"), quote.get("percent_change_90d") if quote else None),
+                "market_cap": _first_number(item.get("market_cap"), quote.get("market_cap") if quote else None),
+                "volume_24h": _first_number(item.get("volume_24h"), quote.get("volume_24h") if quote else None),
+                "volume_to_market_cap": None,
+                "stage": "Insufficient data",
+                "stage_confidence": 0.0,
+                "raw_score": 0.0,
+                "display_score": 0.0,
+                "rating": "AVOID",
+                "data_quality_status": "missing_history",
+                "last_updated": item.get("last_updated") or (quote.get("last_updated") if quote else None),
+            }
+        )
+    frame = pd.DataFrame(rows)
+    if not frame.empty:
+        frame["volume_to_market_cap"] = frame.apply(_volume_to_market_cap, axis=1)
+    return frame if not frame.empty else empty_screener_frame()
 
 
 def load_screener_rows(currency: str) -> pd.DataFrame:
@@ -222,7 +315,30 @@ def empty_screener_frame() -> pd.DataFrame:
 
 def empty_state() -> None:
     st.warning("No stored crypto scan data is available yet.")
-    st.write("Run the FastAPI backend and trigger `POST /api/v1/scans/coinmarketcap` after configuring `COINMARKETCAP_API_KEY`.")
+    st.write("Use `Refresh live market data` to call the CoinMarketCap keyless public API.")
+
+
+def parse_symbols(symbols_text: str) -> list[str]:
+    symbols = [symbol.strip().upper() for symbol in symbols_text.split(",") if symbol.strip()]
+    return symbols or DEFAULT_SYMBOLS
+
+
+def _first_number(*values: Any) -> float | None:
+    for value in values:
+        try:
+            if value is not None:
+                return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _volume_to_market_cap(row: pd.Series) -> float | None:
+    market_cap = row.get("market_cap")
+    volume = row.get("volume_24h")
+    if market_cap and volume:
+        return float(volume) / float(market_cap)
+    return None
 
 
 def _sqlite_path() -> Path | None:
