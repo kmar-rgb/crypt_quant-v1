@@ -9,9 +9,7 @@ data/*.db
 data/raw/
 data/processed/
 data/sample/
-dashboard_site/
 .git-codex/
-.streamlit/secrets.toml
 frontend/node_modules/
 frontend/.next/
 frontend/out/
