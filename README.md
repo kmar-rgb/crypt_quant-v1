@@ -118,7 +118,7 @@ The Streamlit `app.py` first tries CoinMarketCap's keyless public simple-price e
 https://pro-api.coinmarketcap.com/public-api/v1/simple/price
 ```
 
-If CoinMarketCap returns a temporary busy or unavailable response, the app falls back to CoinGecko's public `/coins/markets` endpoint for the default dashboard symbols. This keeps the dashboard populated with current public prices while preserving the no-key setup.
+If CoinMarketCap returns a temporary busy or unavailable response, the app falls back to CoinGecko's public `/coins/markets` endpoint. The sidebar can scan the top 10-250 coins by market cap, scan categories such as DeFi and RWA, or resolve custom ticker symbols through CoinGecko's public search endpoint before requesting market data. The screener includes a category filter whenever category-tagged rows are loaded. This keeps the dashboard populated with current public prices while preserving the no-key setup.
 
 The current tests cover:
 

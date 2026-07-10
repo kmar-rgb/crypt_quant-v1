@@ -33,6 +33,21 @@ COINGECKO_IDS_BY_SYMBOL = {
     "LINK": "chainlink",
     "TON": "the-open-network",
 }
+COINGECKO_CATEGORY_IDS = {
+    "DeFi": "decentralized-finance-defi",
+    "RWA": "real-world-assets-rwa",
+    "Layer 1": "layer-1",
+    "Smart Contract Platforms": "smart-contract-platform",
+    "AI": "artificial-intelligence",
+    "Gaming": "gaming",
+    "Meme": "meme-token",
+    "DePIN": "depin",
+    "Oracle": "oracle",
+    "DEX": "decentralized-exchange",
+    "Liquid Staking": "liquid-staking-tokens",
+    "NFT": "non-fungible-tokens-nft",
+    "Stablecoins": "stablecoins",
+}
 
 
 def main() -> None:
@@ -47,25 +62,33 @@ def main() -> None:
             label_visibility="collapsed",
         )
         st.divider()
-        symbols = st.text_input("Live symbols", ",".join(DEFAULT_SYMBOLS))
+        universe_mode = st.radio("Universe", ["Top coins", "Category", "Custom symbols"], horizontal=False)
+        top_limit = st.slider("Coins to scan", 10, 250, 100, step=10, disabled=universe_mode == "Custom symbols")
+        category_labels = st.multiselect(
+            "Categories",
+            list(COINGECKO_CATEGORY_IDS),
+            default=["DeFi", "RWA"],
+            disabled=universe_mode != "Category",
+        )
+        symbols = st.text_input("Custom symbols", ",".join(DEFAULT_SYMBOLS), disabled=universe_mode != "Custom symbols")
         refresh_live = st.button("Refresh live market data", type="primary")
         st.caption("Research classification only. No trades are placed.")
 
     if page == "Market Overview":
-        market_overview(settings, symbols, refresh_live)
+        market_overview(settings, symbols, refresh_live, universe_mode, top_limit, category_labels)
     elif page == "Quant Screener":
-        quant_screener(settings, symbols, refresh_live)
+        quant_screener(settings, symbols, refresh_live, universe_mode, top_limit, category_labels)
     elif page == "AI Analyst Report":
         analyst_report()
     else:
         settings_page(settings, runtime)
 
 
-def market_overview(settings: Any, symbols_text: str, refresh_live: bool) -> None:
+def market_overview(settings: Any, symbols_text: str, refresh_live: bool, universe_mode: str, top_limit: int, category_labels: list[str]) -> None:
     st.title("Crypto Market Overview")
     st.caption("BUY means quantitative research classification, not an instruction to purchase.")
 
-    rows, source_note = load_market_rows(settings, symbols_text, refresh_live)
+    rows, source_note = load_market_rows(settings, symbols_text, refresh_live, universe_mode, top_limit, category_labels)
     st.caption(source_note)
     scanned = len(rows)
     buy_count = int((rows["rating"] == "BUY").sum()) if not rows.empty and "rating" in rows else 0
@@ -100,9 +123,9 @@ def market_overview(settings: Any, symbols_text: str, refresh_live: bool) -> Non
     )
 
 
-def quant_screener(settings: Any, symbols_text: str, refresh_live: bool) -> None:
+def quant_screener(settings: Any, symbols_text: str, refresh_live: bool, universe_mode: str, top_limit: int, category_labels: list[str]) -> None:
     st.title("Crypto Quant Screener")
-    rows, source_note = load_market_rows(settings, symbols_text, refresh_live)
+    rows, source_note = load_market_rows(settings, symbols_text, refresh_live, universe_mode, top_limit, category_labels)
     st.caption(source_note)
     if rows.empty:
         empty_state()
@@ -110,6 +133,8 @@ def quant_screener(settings: Any, symbols_text: str, refresh_live: bool) -> None
 
     ratings = st.multiselect("Rating", sorted(rows["rating"].dropna().unique()), default=sorted(rows["rating"].dropna().unique()))
     stages = st.multiselect("Stage", sorted(rows["stage"].dropna().unique()), default=sorted(rows["stage"].dropna().unique()))
+    category_values = sorted(value for value in rows.get("category", pd.Series(dtype=str)).dropna().unique() if str(value).strip())
+    selected_categories = st.multiselect("Category", category_values, default=category_values) if category_values else []
     min_market_cap = st.number_input("Minimum market cap", min_value=0.0, value=float(settings.filters.minimum_market_cap), step=1_000_000.0)
     min_volume = st.number_input("Minimum 24h volume", min_value=0.0, value=float(settings.filters.minimum_24h_volume), step=500_000.0)
 
@@ -119,6 +144,8 @@ def quant_screener(settings: Any, symbols_text: str, refresh_live: bool) -> None
         & rows["market_cap"].fillna(0).ge(min_market_cap)
         & rows["volume_24h"].fillna(0).ge(min_volume)
     ]
+    if selected_categories and "category" in filtered:
+        filtered = filtered[filtered["category"].isin(selected_categories)]
 
     columns = [
         "rank",
@@ -132,6 +159,7 @@ def quant_screener(settings: Any, symbols_text: str, refresh_live: bool) -> None
         "market_cap",
         "volume_24h",
         "volume_to_market_cap",
+        "category",
         "stage",
         "display_score",
         "rating",
@@ -182,8 +210,10 @@ def settings_page(settings: Any, runtime: Any) -> None:
         st.write(f"Database URL: `{runtime.database_url}`")
 
 
-def load_market_rows(settings: Any, symbols_text: str, refresh_live: bool) -> tuple[pd.DataFrame, str]:
+def load_market_rows(settings: Any, symbols_text: str, refresh_live: bool, universe_mode: str, top_limit: int, category_labels: list[str]) -> tuple[pd.DataFrame, str]:
     symbols = parse_symbols(symbols_text)
+    use_top_universe = universe_mode == "Top coins"
+    category_ids = tuple(COINGECKO_CATEGORY_IDS[label] for label in category_labels if label in COINGECKO_CATEGORY_IDS)
     attempted_live = False
     live_error: str | None = None
 
@@ -194,6 +224,9 @@ def load_market_rows(settings: Any, symbols_text: str, refresh_live: bool) -> tu
             settings.scan.default_currency,
             settings.data.request_timeout_seconds,
             settings.data.max_retries,
+            use_top_universe,
+            top_limit,
+            category_ids,
         )
         if not live_rows.empty:
             return live_rows, source
@@ -212,6 +245,9 @@ def load_market_rows(settings: Any, symbols_text: str, refresh_live: bool) -> tu
             settings.scan.default_currency,
             settings.data.request_timeout_seconds,
             settings.data.max_retries,
+            use_top_universe,
+            top_limit,
+            category_ids,
         )
         if not live_rows.empty:
             return live_rows, source
@@ -228,7 +264,38 @@ def load_live_market_data(
     currency: str,
     timeout_seconds: int,
     max_retries: int,
+    use_top_universe: bool,
+    top_limit: int,
+    category_ids: tuple[str, ...],
 ) -> tuple[pd.DataFrame, str | None, str]:
+    if category_ids:
+        try:
+            frame = fetch_coingecko_category_frame(
+                category_ids=category_ids,
+                currency=currency,
+                timeout_seconds=timeout_seconds,
+                max_retries=max_retries,
+                top_limit=top_limit,
+            )
+        except RuntimeError as exc:
+            return empty_screener_frame(), f"CoinGecko category scan failed: {exc}", "Source: no market data available yet"
+        return frame, None, f"Source: CoinGecko category scan ({len(frame)} coins)"
+
+    if use_top_universe:
+        try:
+            frame = fetch_coingecko_markets_frame(
+                symbols=[],
+                currency=currency,
+                timeout_seconds=timeout_seconds,
+                max_retries=max_retries,
+                top_limit=top_limit,
+                category_id=None,
+                category_label="",
+            )
+        except RuntimeError as exc:
+            return empty_screener_frame(), f"CoinGecko top-market scan failed: {exc}", "Source: no market data available yet"
+        return frame, None, f"Source: CoinGecko public market API top {len(frame)} by market cap"
+
     cmc_error: str | None = None
     try:
         envelope = fetch_keyless_simple_price(
@@ -250,6 +317,9 @@ def load_live_market_data(
             currency=currency,
             timeout_seconds=timeout_seconds,
             max_retries=max_retries,
+            top_limit=top_limit,
+            category_id=None,
+            category_label="",
         )
     except RuntimeError as exc:
         fallback_error = f"CoinGecko fallback failed: {exc}"
@@ -307,21 +377,27 @@ def fetch_coingecko_markets_frame(
     currency: str,
     timeout_seconds: int,
     max_retries: int,
+    top_limit: int,
+    category_id: str | None,
+    category_label: str,
 ) -> pd.DataFrame:
-    ids = [COINGECKO_IDS_BY_SYMBOL[symbol] for symbol in symbols if symbol in COINGECKO_IDS_BY_SYMBOL]
-    if not ids:
+    ids = resolve_coingecko_ids(symbols, timeout_seconds=timeout_seconds, max_retries=max_retries) if symbols else []
+    if symbols and not ids:
         return empty_screener_frame()
-    query = urlencode(
-        {
-            "vs_currency": currency.lower(),
-            "ids": ",".join(ids),
-            "order": "market_cap_desc",
-            "per_page": len(ids),
-            "page": 1,
-            "sparkline": "false",
-            "price_change_percentage": "24h,7d,30d",
-        }
-    )
+    params: dict[str, Any] = {
+        "vs_currency": currency.lower(),
+        "order": "market_cap_desc",
+        "per_page": min(max(int(top_limit), 1), 250),
+        "page": 1,
+        "sparkline": "false",
+        "price_change_percentage": "24h,7d,30d",
+    }
+    if ids:
+        params["ids"] = ",".join(ids)
+        params["per_page"] = len(ids)
+    if category_id:
+        params["category"] = category_id
+    query = urlencode(params)
     request = Request(
         f"{COINGECKO_ROOT}/coins/markets?{query}",
         method="GET",
@@ -337,7 +413,7 @@ def fetch_coingecko_markets_frame(
                 payload = json.loads(response.read().decode("utf-8"))
             if not isinstance(payload, list):
                 raise RuntimeError("CoinGecko returned an unexpected response.")
-            return coingecko_markets_frame(payload)
+            return coingecko_markets_frame(payload, category_label=category_label)
         except HTTPError as exc:
             if exc.code not in {429, 500, 502, 503, 504} or attempt >= max_retries:
                 raise RuntimeError(f"HTTP {exc.code}") from exc
@@ -347,6 +423,81 @@ def fetch_coingecko_markets_frame(
                 raise RuntimeError("request failed after retries") from exc
             time.sleep(min(2**attempt, 30))
     raise RuntimeError("request failed")
+
+
+def fetch_coingecko_category_frame(
+    *,
+    category_ids: tuple[str, ...],
+    currency: str,
+    timeout_seconds: int,
+    max_retries: int,
+    top_limit: int,
+) -> pd.DataFrame:
+    frames = []
+    for category_id in category_ids:
+        frame = fetch_coingecko_markets_frame(
+            symbols=[],
+            currency=currency,
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
+            top_limit=top_limit,
+            category_id=category_id,
+            category_label=category_label_for_id(category_id),
+        )
+        if not frame.empty:
+            frames.append(frame)
+    if not frames:
+        return empty_screener_frame()
+    combined = pd.concat(frames, ignore_index=True)
+    if "symbol" in combined:
+        combined = combined.sort_values("market_cap", ascending=False, na_position="last").drop_duplicates("symbol", keep="first")
+    return combined.reset_index(drop=True)
+
+
+def resolve_coingecko_ids(symbols: list[str], *, timeout_seconds: int, max_retries: int) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for symbol in symbols:
+        normalized = symbol.strip().upper()
+        if not normalized:
+            continue
+        coin_id = COINGECKO_IDS_BY_SYMBOL.get(normalized) or search_coingecko_id(normalized, timeout_seconds=timeout_seconds, max_retries=max_retries)
+        if coin_id and coin_id not in seen:
+            ids.append(coin_id)
+            seen.add(coin_id)
+    return ids
+
+
+def search_coingecko_id(symbol: str, *, timeout_seconds: int, max_retries: int) -> str | None:
+    query = urlencode({"query": symbol})
+    request = Request(
+        f"{COINGECKO_ROOT}/search?{query}",
+        method="GET",
+        headers={
+            "Accept": "application/json",
+            "Accept-Encoding": "identity",
+            "User-Agent": "crypt-quant-v1/0.1",
+        },
+    )
+    for attempt in range(max_retries + 1):
+        try:
+            with urlopen(request, timeout=timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            coins = payload.get("coins") if isinstance(payload, dict) else []
+            matches = [coin for coin in coins if str(coin.get("symbol", "")).upper() == symbol]
+            if not matches:
+                return None
+            ranked = sorted(matches, key=lambda coin: coin.get("market_cap_rank") or 999999)
+            return str(ranked[0].get("id")) if ranked[0].get("id") else None
+        except HTTPError as exc:
+            if exc.code not in {429, 500, 502, 503, 504} or attempt >= max_retries:
+                return None
+            time.sleep(min(2**attempt, 30))
+        except (TimeoutError, URLError, json.JSONDecodeError):
+            if attempt >= max_retries:
+                return None
+            time.sleep(min(2**attempt, 30))
+    return None
 
 
 def simple_price_frame(data: Any, currency: str, source: str) -> pd.DataFrame:
@@ -370,6 +521,7 @@ def simple_price_frame(data: Any, currency: str, source: str) -> pd.DataFrame:
                 "market_cap": _first_number(item.get("market_cap"), quote.get("market_cap") if quote else None),
                 "volume_24h": _first_number(item.get("volume_24h"), quote.get("volume_24h") if quote else None),
                 "volume_to_market_cap": None,
+                "category": "",
                 "stage": "Insufficient data",
                 "stage_confidence": 0.0,
                 "raw_score": 0.0,
@@ -386,7 +538,7 @@ def simple_price_frame(data: Any, currency: str, source: str) -> pd.DataFrame:
     return frame if not frame.empty else empty_screener_frame()
 
 
-def coingecko_markets_frame(data: list[dict[str, Any]]) -> pd.DataFrame:
+def coingecko_markets_frame(data: list[dict[str, Any]], category_label: str) -> pd.DataFrame:
     rows = []
     for item in data:
         rows.append(
@@ -402,6 +554,7 @@ def coingecko_markets_frame(data: list[dict[str, Any]]) -> pd.DataFrame:
                 "market_cap": _first_number(item.get("market_cap")),
                 "volume_24h": _first_number(item.get("total_volume")),
                 "volume_to_market_cap": None,
+                "category": category_label,
                 "stage": "Insufficient data",
                 "stage_confidence": 0.0,
                 "raw_score": 0.0,
@@ -473,6 +626,7 @@ def empty_screener_frame() -> pd.DataFrame:
             "market_cap",
             "volume_24h",
             "volume_to_market_cap",
+            "category",
             "stage",
             "stage_confidence",
             "raw_score",
@@ -499,6 +653,13 @@ def public_api_error_message(message: str) -> str:
 def parse_symbols(symbols_text: str) -> list[str]:
     symbols = [symbol.strip().upper() for symbol in symbols_text.split(",") if symbol.strip()]
     return symbols or DEFAULT_SYMBOLS
+
+
+def category_label_for_id(category_id: str) -> str:
+    for label, value in COINGECKO_CATEGORY_IDS.items():
+        if value == category_id:
+            return label
+    return category_id
 
 
 def _first_number(*values: Any) -> float | None:
