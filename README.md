@@ -10,6 +10,7 @@ This repository contains the Phase 1 foundation:
 
 - FastAPI backend package in `crypto_quant/`
 - CoinMarketCap client scaffold with server-side API key handling
+- Streamlit app with CoinMarketCap keyless live data and CoinGecko public API fallback
 - Pydantic data contracts for crypto assets, quotes, scores, ratings, and agent outputs
 - SQLAlchemy database models and initial migration
 - Central crypto settings in `config/crypto_settings.toml`
@@ -108,6 +109,16 @@ $env:NEXT_PUBLIC_API_BASE_URL="http://localhost:8000"
 ```powershell
 python -m unittest discover -s tests
 ```
+
+## Live Market Data Workaround
+
+The Streamlit `app.py` first tries CoinMarketCap's keyless public simple-price endpoint:
+
+```text
+https://pro-api.coinmarketcap.com/public-api/v1/simple/price
+```
+
+If CoinMarketCap returns a temporary busy or unavailable response, the app falls back to CoinGecko's public `/coins/markets` endpoint for the default dashboard symbols. This keeps the dashboard populated with current public prices while preserving the no-key setup.
 
 The current tests cover:
 

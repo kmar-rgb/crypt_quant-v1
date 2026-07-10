@@ -20,6 +20,19 @@ st.set_page_config(page_title="Crypto Quant Research", page_icon="CQ", layout="w
 
 DEFAULT_SYMBOLS = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX", "LINK", "TON"]
 KEYLESS_CMC_ROOT = "https://pro-api.coinmarketcap.com/public-api"
+COINGECKO_ROOT = "https://api.coingecko.com/api/v3"
+COINGECKO_IDS_BY_SYMBOL = {
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "SOL": "solana",
+    "BNB": "binancecoin",
+    "XRP": "ripple",
+    "DOGE": "dogecoin",
+    "ADA": "cardano",
+    "AVAX": "avalanche-2",
+    "LINK": "chainlink",
+    "TON": "the-open-network",
+}
 
 
 def main() -> None:
@@ -123,6 +136,7 @@ def quant_screener(settings: Any, symbols_text: str, refresh_live: bool) -> None
         "display_score",
         "rating",
         "data_quality_status",
+        "market_data_source",
         "last_updated",
     ]
     st.dataframe(filtered[[column for column in columns if column in filtered]], use_container_width=True, hide_index=True)
@@ -163,6 +177,7 @@ def settings_page(settings: Any, runtime: Any) -> None:
 
         st.subheader("API Status")
         st.write("Keyless CoinMarketCap public API enabled")
+        st.write("CoinGecko public market API fallback enabled")
         st.write("CoinMarketCap API key configured" if runtime.coinmarketcap_api_key else "CoinMarketCap API key not configured for keyed endpoints")
         st.write(f"Database URL: `{runtime.database_url}`")
 
@@ -174,14 +189,14 @@ def load_market_rows(settings: Any, symbols_text: str, refresh_live: bool) -> tu
 
     if refresh_live or not _sqlite_path().exists():
         attempted_live = True
-        live_rows, error = load_keyless_simple_price(
+        live_rows, error, source = load_live_market_data(
             tuple(symbols),
             settings.scan.default_currency,
             settings.data.request_timeout_seconds,
             settings.data.max_retries,
         )
         if not live_rows.empty:
-            return live_rows, "Source: CoinMarketCap keyless public API"
+            return live_rows, source
         if error:
             live_error = error
 
@@ -192,14 +207,14 @@ def load_market_rows(settings: Any, symbols_text: str, refresh_live: bool) -> tu
         return stored_rows, "Source: stored local database"
 
     if not attempted_live:
-        live_rows, error = load_keyless_simple_price(
+        live_rows, error, source = load_live_market_data(
             tuple(symbols),
             settings.scan.default_currency,
             settings.data.request_timeout_seconds,
             settings.data.max_retries,
         )
         if not live_rows.empty:
-            return live_rows, "Source: CoinMarketCap keyless public API"
+            return live_rows, source
         live_error = error
 
     if live_error:
@@ -208,12 +223,13 @@ def load_market_rows(settings: Any, symbols_text: str, refresh_live: bool) -> tu
 
 
 @st.cache_data(ttl=120, show_spinner=False)
-def load_keyless_simple_price(
+def load_live_market_data(
     symbols: tuple[str, ...],
     currency: str,
     timeout_seconds: int,
     max_retries: int,
-) -> tuple[pd.DataFrame, str | None]:
+) -> tuple[pd.DataFrame, str | None, str]:
+    cmc_error: str | None = None
     try:
         envelope = fetch_keyless_simple_price(
             symbols=list(symbols),
@@ -222,8 +238,27 @@ def load_keyless_simple_price(
             max_retries=max_retries,
         )
     except RuntimeError as exc:
-        return empty_screener_frame(), public_api_error_message(str(exc))
-    return simple_price_frame(envelope.get("data"), currency), None
+        cmc_error = public_api_error_message(str(exc))
+    else:
+        frame = simple_price_frame(envelope.get("data"), currency, source="CoinMarketCap keyless")
+        if not frame.empty:
+            return frame, None, "Source: CoinMarketCap keyless public API"
+
+    try:
+        frame = fetch_coingecko_markets_frame(
+            symbols=list(symbols),
+            currency=currency,
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
+        )
+    except RuntimeError as exc:
+        fallback_error = f"CoinGecko fallback failed: {exc}"
+        return empty_screener_frame(), "; ".join(item for item in [cmc_error, fallback_error] if item), "Source: no market data available yet"
+    if not frame.empty:
+        if cmc_error:
+            return frame, None, "Source: CoinGecko public market API fallback because CoinMarketCap is unavailable"
+        return frame, None, "Source: CoinGecko public market API fallback"
+    return empty_screener_frame(), cmc_error or "No live market rows returned.", "Source: no market data available yet"
 
 
 def fetch_keyless_simple_price(
@@ -266,7 +301,55 @@ def fetch_keyless_simple_price(
     raise RuntimeError("request failed")
 
 
-def simple_price_frame(data: Any, currency: str) -> pd.DataFrame:
+def fetch_coingecko_markets_frame(
+    *,
+    symbols: list[str],
+    currency: str,
+    timeout_seconds: int,
+    max_retries: int,
+) -> pd.DataFrame:
+    ids = [COINGECKO_IDS_BY_SYMBOL[symbol] for symbol in symbols if symbol in COINGECKO_IDS_BY_SYMBOL]
+    if not ids:
+        return empty_screener_frame()
+    query = urlencode(
+        {
+            "vs_currency": currency.lower(),
+            "ids": ",".join(ids),
+            "order": "market_cap_desc",
+            "per_page": len(ids),
+            "page": 1,
+            "sparkline": "false",
+            "price_change_percentage": "24h,7d,30d",
+        }
+    )
+    request = Request(
+        f"{COINGECKO_ROOT}/coins/markets?{query}",
+        method="GET",
+        headers={
+            "Accept": "application/json",
+            "Accept-Encoding": "identity",
+            "User-Agent": "crypt-quant-v1/0.1",
+        },
+    )
+    for attempt in range(max_retries + 1):
+        try:
+            with urlopen(request, timeout=timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if not isinstance(payload, list):
+                raise RuntimeError("CoinGecko returned an unexpected response.")
+            return coingecko_markets_frame(payload)
+        except HTTPError as exc:
+            if exc.code not in {429, 500, 502, 503, 504} or attempt >= max_retries:
+                raise RuntimeError(f"HTTP {exc.code}") from exc
+            time.sleep(min(2**attempt, 30))
+        except (TimeoutError, URLError) as exc:
+            if attempt >= max_retries:
+                raise RuntimeError("request failed after retries") from exc
+            time.sleep(min(2**attempt, 30))
+    raise RuntimeError("request failed")
+
+
+def simple_price_frame(data: Any, currency: str, source: str) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     items = data.items() if isinstance(data, dict) else enumerate(data if isinstance(data, list) else [])
     for index, payload in items:
@@ -293,7 +376,40 @@ def simple_price_frame(data: Any, currency: str) -> pd.DataFrame:
                 "display_score": 0.0,
                 "rating": "AVOID",
                 "data_quality_status": "missing_history",
+                "market_data_source": source,
                 "last_updated": item.get("last_updated") or (quote.get("last_updated") if quote else None),
+            }
+        )
+    frame = pd.DataFrame(rows)
+    if not frame.empty:
+        frame["volume_to_market_cap"] = frame.apply(_volume_to_market_cap, axis=1)
+    return frame if not frame.empty else empty_screener_frame()
+
+
+def coingecko_markets_frame(data: list[dict[str, Any]]) -> pd.DataFrame:
+    rows = []
+    for item in data:
+        rows.append(
+            {
+                "rank": item.get("market_cap_rank"),
+                "name": item.get("name"),
+                "symbol": str(item.get("symbol", "")).upper(),
+                "price": _first_number(item.get("current_price")),
+                "percent_change_24h": _first_number(item.get("price_change_percentage_24h")),
+                "percent_change_7d": _first_number(item.get("price_change_percentage_7d_in_currency")),
+                "percent_change_30d": _first_number(item.get("price_change_percentage_30d_in_currency")),
+                "percent_change_90d": None,
+                "market_cap": _first_number(item.get("market_cap")),
+                "volume_24h": _first_number(item.get("total_volume")),
+                "volume_to_market_cap": None,
+                "stage": "Insufficient data",
+                "stage_confidence": 0.0,
+                "raw_score": 0.0,
+                "display_score": 0.0,
+                "rating": "AVOID",
+                "data_quality_status": "fallback_price_only",
+                "market_data_source": "CoinGecko fallback",
+                "last_updated": item.get("last_updated"),
             }
         )
     frame = pd.DataFrame(rows)
@@ -363,6 +479,7 @@ def empty_screener_frame() -> pd.DataFrame:
             "display_score",
             "rating",
             "data_quality_status",
+            "market_data_source",
             "last_updated",
         ]
     )
@@ -370,7 +487,7 @@ def empty_screener_frame() -> pd.DataFrame:
 
 def empty_state() -> None:
     st.warning("No stored crypto scan data is available yet.")
-    st.write("Use `Refresh live market data` to retry the CoinMarketCap keyless public API.")
+    st.write("Use `Refresh live market data` to retry the public market data providers.")
 
 
 def public_api_error_message(message: str) -> str:
