@@ -1,20 +1,25 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 import pandas as pd
 import streamlit as st
 
-from crypto_quant.cmc_client import CoinMarketCapError, CoinMarketCapPublicClient
 from crypto_quant.config import DEFAULT_SQLITE_PATH, load_app_settings, load_runtime_settings
 
 
 st.set_page_config(page_title="Crypto Quant Research", page_icon="CQ", layout="wide")
 
 DEFAULT_SYMBOLS = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX", "LINK", "TON"]
+KEYLESS_CMC_ROOT = "https://pro-api.coinmarketcap.com/public-api"
 
 
 def main() -> None:
@@ -200,15 +205,56 @@ def load_keyless_simple_price(
     timeout_seconds: int,
     max_retries: int,
 ) -> tuple[pd.DataFrame, str | None]:
-    client = CoinMarketCapPublicClient(
-        timeout_seconds=timeout_seconds,
-        max_retries=max_retries,
-    )
     try:
-        envelope = client.simple_price(symbols=list(symbols), convert=currency)
-    except CoinMarketCapError as exc:
+        envelope = fetch_keyless_simple_price(
+            symbols=list(symbols),
+            convert=currency,
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
+        )
+    except RuntimeError as exc:
         return empty_screener_frame(), f"CoinMarketCap keyless request failed: {exc}"
-    return simple_price_frame(envelope.data, currency), None
+    return simple_price_frame(envelope.get("data"), currency), None
+
+
+def fetch_keyless_simple_price(
+    *,
+    symbols: list[str],
+    convert: str,
+    timeout_seconds: int,
+    max_retries: int,
+) -> dict[str, Any]:
+    cleaned_symbols = ",".join(symbol.strip().upper() for symbol in symbols if symbol.strip())
+    query = urlencode({"symbol": cleaned_symbols, "convert": convert.upper()})
+    url = f"{KEYLESS_CMC_ROOT}/v1/simple/price?{query}"
+    request = Request(
+        url,
+        method="GET",
+        headers={
+            "Accept": "application/json",
+            "Accept-Encoding": "identity",
+        },
+    )
+
+    for attempt in range(max_retries + 1):
+        try:
+            with urlopen(request, timeout=timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            status = payload.get("status") if isinstance(payload, dict) else None
+            if isinstance(status, dict) and status.get("error_code"):
+                raise RuntimeError(str(status.get("error_message") or "CoinMarketCap returned an error."))
+            if not isinstance(payload, dict):
+                raise RuntimeError("CoinMarketCap returned an unexpected response.")
+            return payload
+        except HTTPError as exc:
+            if exc.code not in {429, 500, 502, 503, 504} or attempt >= max_retries:
+                raise RuntimeError(f"HTTP {exc.code}") from exc
+            time.sleep(min(2**attempt, 30))
+        except (TimeoutError, URLError) as exc:
+            if attempt >= max_retries:
+                raise RuntimeError("request failed after retries") from exc
+            time.sleep(min(2**attempt, 30))
+    raise RuntimeError("request failed")
 
 
 def simple_price_frame(data: Any, currency: str) -> pd.DataFrame:
