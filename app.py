@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+<<<<<<< HEAD
+import os
+import sqlite3
+from pathlib import Path
+from typing import Any
+=======
 import json
 import os
 import sqlite3
@@ -9,6 +15,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+>>>>>>> 5daa80223fad65e32e4d9e4d17ef035d6b249654
 
 import pandas as pd
 import streamlit as st
@@ -18,9 +25,12 @@ from crypto_quant.config import DEFAULT_SQLITE_PATH, load_app_settings, load_run
 
 st.set_page_config(page_title="Crypto Quant Research", page_icon="CQ", layout="wide")
 
+<<<<<<< HEAD
+=======
 DEFAULT_SYMBOLS = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX", "LINK", "TON"]
 KEYLESS_CMC_ROOT = "https://pro-api.coinmarketcap.com/public-api"
 
+>>>>>>> 5daa80223fad65e32e4d9e4d17ef035d6b249654
 
 def main() -> None:
     settings = load_app_settings()
@@ -34,6 +44,14 @@ def main() -> None:
             label_visibility="collapsed",
         )
         st.divider()
+<<<<<<< HEAD
+        st.caption("Research classification only. No trades are placed.")
+
+    if page == "Market Overview":
+        market_overview(settings)
+    elif page == "Quant Screener":
+        quant_screener(settings)
+=======
         symbols = st.text_input("Live symbols", ",".join(DEFAULT_SYMBOLS))
         refresh_live = st.button("Refresh live market data", type="primary")
         st.caption("Research classification only. No trades are placed.")
@@ -42,18 +60,27 @@ def main() -> None:
         market_overview(settings, symbols, refresh_live)
     elif page == "Quant Screener":
         quant_screener(settings, symbols, refresh_live)
+>>>>>>> 5daa80223fad65e32e4d9e4d17ef035d6b249654
     elif page == "AI Analyst Report":
         analyst_report()
     else:
         settings_page(settings, runtime)
 
 
+<<<<<<< HEAD
+def market_overview(settings: Any) -> None:
+    st.title("Crypto Market Overview")
+    st.caption("BUY means quantitative research classification, not an instruction to purchase.")
+
+    rows = load_screener_rows(settings.scan.default_currency)
+=======
 def market_overview(settings: Any, symbols_text: str, refresh_live: bool) -> None:
     st.title("Crypto Market Overview")
     st.caption("BUY means quantitative research classification, not an instruction to purchase.")
 
     rows, source_note = load_market_rows(settings, symbols_text, refresh_live)
     st.caption(source_note)
+>>>>>>> 5daa80223fad65e32e4d9e4d17ef035d6b249654
     scanned = len(rows)
     buy_count = int((rows["rating"] == "BUY").sum()) if not rows.empty and "rating" in rows else 0
     watch_count = int((rows["rating"] == "WATCH").sum()) if not rows.empty and "rating" in rows else 0
@@ -87,10 +114,16 @@ def market_overview(settings: Any, symbols_text: str, refresh_live: bool) -> Non
     )
 
 
+<<<<<<< HEAD
+def quant_screener(settings: Any) -> None:
+    st.title("Crypto Quant Screener")
+    rows = load_screener_rows(settings.scan.default_currency)
+=======
 def quant_screener(settings: Any, symbols_text: str, refresh_live: bool) -> None:
     st.title("Crypto Quant Screener")
     rows, source_note = load_market_rows(settings, symbols_text, refresh_live)
     st.caption(source_note)
+>>>>>>> 5daa80223fad65e32e4d9e4d17ef035d6b249654
     if rows.empty:
         empty_state()
         return
@@ -162,6 +195,12 @@ def settings_page(settings: Any, runtime: Any) -> None:
         st.write(f"Minimum risk-to-reward: {settings.scoring.minimum_risk_reward:.1f}")
 
         st.subheader("API Status")
+<<<<<<< HEAD
+        st.write("CoinMarketCap API key configured" if runtime.coinmarketcap_api_key else "CoinMarketCap API key not configured")
+        st.write(f"Database URL: `{runtime.database_url}`")
+
+
+=======
         st.write("Keyless CoinMarketCap public API enabled")
         st.write("CoinMarketCap API key configured" if runtime.coinmarketcap_api_key else "CoinMarketCap API key not configured for keyed endpoints")
         st.write(f"Database URL: `{runtime.database_url}`")
@@ -293,6 +332,7 @@ def simple_price_frame(data: Any, currency: str) -> pd.DataFrame:
     return frame if not frame.empty else empty_screener_frame()
 
 
+>>>>>>> 5daa80223fad65e32e4d9e4d17ef035d6b249654
 def load_screener_rows(currency: str) -> pd.DataFrame:
     db_path = _sqlite_path()
     if db_path is None or not db_path.exists():
@@ -361,6 +401,9 @@ def empty_screener_frame() -> pd.DataFrame:
 
 def empty_state() -> None:
     st.warning("No stored crypto scan data is available yet.")
+<<<<<<< HEAD
+    st.write("Run the FastAPI backend and trigger `POST /api/v1/scans/coinmarketcap` after configuring `COINMARKETCAP_API_KEY`.")
+=======
     st.write("Use `Refresh live market data` to call the CoinMarketCap keyless public API.")
 
 
@@ -385,6 +428,7 @@ def _volume_to_market_cap(row: pd.Series) -> float | None:
     if market_cap and volume:
         return float(volume) / float(market_cap)
     return None
+>>>>>>> 5daa80223fad65e32e4d9e4d17ef035d6b249654
 
 
 def _sqlite_path() -> Path | None:
